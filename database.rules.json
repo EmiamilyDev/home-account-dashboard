@@ -1,0 +1,37 @@
+{
+  "rules": {
+    "home-account-dashboard": {
+      "sharedState": {
+        ".read": "auth != null",
+        ".write": "auth != null",
+        ".validate": "newData.hasChildren(['rows', 'changeLog', 'updatedAt', 'updatedBy'])",
+        "rows": {
+          "$index": {
+            ".validate": "$index.matches(/^[0-9]+$/) && newData.hasChildren(['period', 'income_other', 'income_nong', 'income_fang', 'mortgage', 'insurance', 'built_in', 'furniture', 'mortgage_extra', 'expense_other', 'detail', 'category']) && newData.child('period').isString() && newData.child('period').val().length <= 20 && newData.child('income_other').isNumber() && newData.child('income_other').val() >= 0 && newData.child('income_nong').isNumber() && newData.child('income_nong').val() >= 0 && newData.child('income_fang').isNumber() && newData.child('income_fang').val() >= 0 && newData.child('mortgage').isNumber() && newData.child('mortgage').val() >= 0 && newData.child('insurance').isNumber() && newData.child('insurance').val() >= 0 && newData.child('built_in').isNumber() && newData.child('built_in').val() >= 0 && newData.child('furniture').isNumber() && newData.child('furniture').val() >= 0 && newData.child('mortgage_extra').isNumber() && newData.child('mortgage_extra').val() >= 0 && newData.child('expense_other').isNumber() && newData.child('expense_other').val() >= 0 && newData.child('detail').isString() && newData.child('detail').val().length <= 5000 && newData.child('category').isString() && newData.child('category').val().length <= 80"
+          }
+        },
+        "changeLog": {
+          "$index": {
+            ".validate": "$index.matches(/^[0-9]+$/) && newData.isString() && newData.val().length <= 500"
+          }
+        },
+        "updatedAt": {
+          ".validate": "newData.isNumber() && newData.val() > 0"
+        },
+        "updatedBy": {
+          ".validate": "newData.isString() && newData.val().matches(/^client-[a-z0-9]{8}$/)"
+        },
+        "$other": {
+          ".validate": false
+        }
+      },
+      "$other": {
+        ".validate": false
+      }
+    },
+    "$other": {
+      ".read": false,
+      ".write": false
+    }
+  }
+}

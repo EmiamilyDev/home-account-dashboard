@@ -5,6 +5,21 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Home Account Dashboard</title>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script>
+    window.HOME_ACCOUNT_FIREBASE_CONFIG = {
+      apiKey: "AIzaSyDhBLzazEb4t-ccYpYJGz056ciMVvHnFPA",
+      authDomain: "home-account-dashboard.firebaseapp.com",
+      databaseURL: "https://home-account-dashboard-default-rtdb.asia-southeast1.firebasedatabase.app",
+      projectId: "home-account-dashboard",
+      storageBucket: "home-account-dashboard.firebasestorage.app",
+      messagingSenderId: "1033228017690",
+      appId: "1:1033228017690:web:f3b558a8b6f0679cc671a3",
+      measurementId: "G-MEREHVCQ74"
+    };
+  </script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
   <style>
       body {
         font-family: 'Prompt', sans-serif;
@@ -66,6 +81,28 @@
         gap: 10px;
         color: #334155;
         font-size: 0.88rem;
+      }
+      .sync-status {
+        display: inline-flex;
+        align-items: center;
+        padding: 6px 10px;
+        border-radius: 999px;
+        font-size: 0.78rem;
+        font-weight: 600;
+        background: #e2e8f0;
+        color: #334155;
+      }
+      .sync-status.online {
+        background: #dcfce7;
+        color: #166534;
+      }
+      .sync-status.connecting {
+        background: #dbeafe;
+        color: #1d4ed8;
+      }
+      .sync-status.offline {
+        background: #fee2e2;
+        color: #b91c1c;
       }
       .card {
         background: #ffffff;
@@ -568,6 +605,7 @@
     <div class="table-actions">
       <span class="hint">แก้ไขได้ที่คอลัมน์ งวดที่, รายรับ, รายจ่าย, รายละเอียด แล้วระบบจะบันทึกข้อมูลให้อัตโนมัติ</span>
       <div>
+        <span id="cloudSyncStatus" class="sync-status offline">Cloud Sync: ปิดอยู่</span>
         <button id="addRow" class="button-primary">เพิ่มรายการ</button>
         <button id="saveData" class="button-primary">บันทึกข้อมูล</button>
         <button id="clearLog" class="button-secondary">ล้าง log</button>
@@ -705,8 +743,8 @@
       }
     }
 
-    const storedData = loadFromStorage();
-    const data = (storedData || rawData)
+    function normalizeDataRows(rows) {
+      return (rows || [])
       .filter(row => row.period || row.detail || row.income_other || row.income_nong || row.income_fang || row.mortgage || row.insurance || row.built_in || row.furniture || row.mortgage_extra || row.expense_other)
       .map((row, index) => {
         const income_total = (row.income_other || 0) + (row.income_nong || 0) + (row.income_fang || 0);
@@ -730,6 +768,15 @@
           category: row.category || '—'
         };
       });
+    }
+
+    function replaceData(rows) {
+      const normalized = normalizeDataRows(rows);
+      data.splice(0, data.length, ...normalized);
+    }
+
+    const storedData = loadFromStorage();
+    const data = normalizeDataRows(storedData || rawData);
 
     function formatTH(amount) {
       const value = amount == null || amount === '' ? 0 : Number(amount);
@@ -753,12 +800,20 @@
     let changeLog = [];
     let expenseChart;
     let balanceChart;
+    let dbRef = null;
+    let cloudSaveTimer = null;
+    let isApplyingRemoteUpdate = false;
+    let lastCloudUpdatedAt = 0;
+    const cloudClientId = `client-${Math.random().toString(36).slice(2, 10)}`;
+    const cloudSyncPath = 'home-account-dashboard/sharedState';
+    const firebaseConfig = window.HOME_ACCOUNT_FIREBASE_CONFIG || null;
     const cardValues = document.querySelectorAll('.dashboard .card p');
     const tableBody = document.getElementById('dataTable');
     const changeLogContainer = document.getElementById('changeLog');
     const clearLogButton = document.getElementById('clearLog');
     const addRowButton = document.getElementById('addRow');
     const saveDataButton = document.getElementById('saveData');
+    const cloudSyncStatus = document.getElementById('cloudSyncStatus');
     const grandIncomeOtherCell = document.getElementById('grandIncomeOther');
     const grandNongCell = document.getElementById('grandNong');
     const grandFangCell = document.getElementById('grandFang');
@@ -771,6 +826,130 @@
     const grandExpenseOtherCell = document.getElementById('grandExpenseOther');
     const grandExpenseCell = document.getElementById('grandExpense');
     const grandBalanceCell = document.getElementById('grandBalance');
+
+    function setCloudSyncStatus(text, state) {
+      if (!cloudSyncStatus) return;
+      cloudSyncStatus.textContent = text;
+      cloudSyncStatus.className = `sync-status ${state}`;
+    }
+
+    function isFirebaseConfigValid(config) {
+      if (!config || typeof config !== 'object') return false;
+      const requiredKeys = ['apiKey', 'authDomain', 'databaseURL', 'projectId'];
+      return requiredKeys.every(key => typeof config[key] === 'string' && config[key].trim().length > 0);
+    }
+
+    function serializeRowsForCloud() {
+      return data.map(row => ({
+        period: row.period || '',
+        income_other: row.income_other || 0,
+        income_nong: row.income_nong || 0,
+        income_fang: row.income_fang || 0,
+        mortgage: row.mortgage || 0,
+        insurance: row.insurance || 0,
+        built_in: row.built_in || 0,
+        furniture: row.furniture || 0,
+        mortgage_extra: row.mortgage_extra || 0,
+        expense_other: row.expense_other || 0,
+        detail: row.detail || '',
+        category: row.category || '—'
+      }));
+    }
+
+    function saveToCloud() {
+      if (!dbRef || isApplyingRemoteUpdate) return Promise.resolve();
+      const payload = {
+        rows: serializeRowsForCloud(),
+        changeLog: changeLog.slice(0, 50),
+        updatedAt: Date.now(),
+        updatedBy: cloudClientId
+      };
+      lastCloudUpdatedAt = payload.updatedAt;
+      setCloudSyncStatus('Cloud Sync: กำลังซิงก์...', 'connecting');
+      return dbRef.set(payload)
+        .then(() => {
+          setCloudSyncStatus('Cloud Sync: ซิงก์แล้ว', 'online');
+        })
+        .catch(error => {
+          console.warn('ไม่สามารถบันทึกข้อมูลลง Cloud ได้', error);
+          setCloudSyncStatus('Cloud Sync: ล้มเหลว', 'offline');
+        });
+    }
+
+    function queueCloudSave() {
+      if (!dbRef || isApplyingRemoteUpdate) return;
+      if (cloudSaveTimer) {
+        clearTimeout(cloudSaveTimer);
+      }
+      cloudSaveTimer = window.setTimeout(() => {
+        saveToCloud();
+      }, 600);
+    }
+
+    async function initCloudSync() {
+      if (!isFirebaseConfigValid(firebaseConfig)) {
+        setCloudSyncStatus('Cloud Sync: ไม่มี config', 'offline');
+        return;
+      }
+      try {
+        if (!firebase.apps.length) {
+          firebase.initializeApp(firebaseConfig);
+        }
+        setCloudSyncStatus('Cloud Sync: กำลังยืนยันตัวตน...', 'connecting');
+        const auth = firebase.auth();
+        if (!auth.currentUser) {
+          await auth.signInAnonymously();
+        }
+      } catch (error) {
+        console.warn('ยืนยันตัวตน Firebase ไม่สำเร็จ', error);
+        setCloudSyncStatus('Cloud Sync: ยืนยันตัวตนไม่สำเร็จ', 'offline');
+        return;
+      }
+
+      try {
+        dbRef = firebase.database().ref(cloudSyncPath);
+        setCloudSyncStatus('Cloud Sync: กำลังเชื่อมต่อ...', 'connecting');
+
+        dbRef.on('value', snapshot => {
+          const payload = snapshot.val();
+          if (!payload) {
+            setCloudSyncStatus('Cloud Sync: ยังไม่มีข้อมูล', 'connecting');
+            saveToCloud();
+            return;
+          }
+
+          const remoteUpdatedAt = Number(payload.updatedAt) || 0;
+          if (payload.updatedBy === cloudClientId || remoteUpdatedAt <= lastCloudUpdatedAt) {
+            setCloudSyncStatus('Cloud Sync: ซิงก์แล้ว', 'online');
+            return;
+          }
+
+          isApplyingRemoteUpdate = true;
+          try {
+            lastCloudUpdatedAt = remoteUpdatedAt;
+            if (Array.isArray(payload.rows)) {
+              replaceData(payload.rows);
+              saveToStorage();
+            }
+            if (Array.isArray(payload.changeLog)) {
+              changeLog = payload.changeLog;
+              saveLogToStorage();
+            }
+            refreshTableAndCharts();
+            renderLog();
+          } finally {
+            isApplyingRemoteUpdate = false;
+          }
+          setCloudSyncStatus('Cloud Sync: อัปเดตจากอีกเครื่องแล้ว', 'online');
+        }, error => {
+          console.warn('การเชื่อมต่อ Cloud Sync ล้มเหลว', error);
+          setCloudSyncStatus('Cloud Sync: เชื่อมต่อไม่ได้', 'offline');
+        });
+      } catch (error) {
+        console.warn('เริ่มต้น Firebase ไม่สำเร็จ', error);
+        setCloudSyncStatus('Cloud Sync: เริ่มต้นไม่สำเร็จ', 'offline');
+      }
+    }
 
     function recalcTotals() {
       return data.reduce((acc, row) => {
@@ -828,6 +1007,8 @@
 
     function addLog(message) {
       changeLog.unshift(`${new Date().toLocaleTimeString('th-TH')} - ${message}`);
+      saveLogToStorage();
+      queueCloudSave();
       renderLog();
       console.log(message);
     }
@@ -884,6 +1065,7 @@
       addLog('เพิ่มรายการใหม่ในตาราง');
       refreshTableAndCharts();
       saveToStorage();
+      queueCloudSave();
       window.requestAnimationFrame(() => {
         const lastRow = tableBody.querySelector('tr:last-child');
         if (lastRow) {
@@ -961,6 +1143,7 @@
               updateCharts(totals);
               updateTotalsRow(totals);
               saveToStorage();
+              queueCloudSave();
             }
           });
         });
@@ -983,6 +1166,7 @@
       refreshTableAndCharts();
       saveToStorage();
       saveLogToStorage();
+      queueCloudSave();
     }
 
     function selectTab(tabId) {
@@ -1065,12 +1249,14 @@
       changeLog = [];
       renderLog();
       saveLogToStorage();
+      queueCloudSave();
     });
 
     saveDataButton.addEventListener('click', () => {
       saveToStorage();
       addLog('บันทึกข้อมูลแล้ว');
       saveLogToStorage();
+      saveToCloud();
     });
 
     addRowButton.addEventListener('click', () => addRow());
@@ -1084,6 +1270,7 @@
     setupCharts();
     updateCharts(initialTotals);
     renderLog();
+    initCloudSync();
   </script>
 </body>
 </html>
