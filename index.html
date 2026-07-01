@@ -104,6 +104,27 @@
         background: #fee2e2;
         color: #b91c1c;
       }
+      .save-popup {
+        position: fixed;
+        right: 20px;
+        bottom: 20px;
+        z-index: 1200;
+        background: #166534;
+        color: #ffffff;
+        border-radius: 12px;
+        padding: 10px 14px;
+        font-size: 0.84rem;
+        font-weight: 600;
+        box-shadow: 0 10px 24px rgba(22, 101, 52, 0.28);
+        opacity: 0;
+        transform: translateY(8px);
+        pointer-events: none;
+        transition: opacity 0.22s ease, transform 0.22s ease;
+      }
+      .save-popup.show {
+        opacity: 1;
+        transform: translateY(0);
+      }
       .card {
         background: #ffffff;
         padding: 18px 20px;
@@ -800,6 +821,7 @@
     let changeLog = [];
     let expenseChart;
     let balanceChart;
+    let savePopupTimer = null;
     let dbRef = null;
     let cloudSaveTimer = null;
     let isApplyingRemoteUpdate = false;
@@ -826,6 +848,20 @@
     const grandExpenseOtherCell = document.getElementById('grandExpenseOther');
     const grandExpenseCell = document.getElementById('grandExpense');
     const grandBalanceCell = document.getElementById('grandBalance');
+    const savePopup = document.createElement('div');
+    savePopup.className = 'save-popup';
+    savePopup.textContent = 'บันทึกข้อมูลเรียบร้อย';
+    document.body.appendChild(savePopup);
+
+    function showSavePopup() {
+      savePopup.classList.add('show');
+      if (savePopupTimer) {
+        window.clearTimeout(savePopupTimer);
+      }
+      savePopupTimer = window.setTimeout(() => {
+        savePopup.classList.remove('show');
+      }, 1700);
+    }
 
     function setCloudSyncStatus(text, state) {
       if (!cloudSyncStatus) return;
@@ -1322,6 +1358,7 @@
       addLog('บันทึกข้อมูลแล้ว');
       saveLogToStorage();
       saveToCloud();
+      showSavePopup();
     });
 
     addRowButton.addEventListener('click', () => addRow());
