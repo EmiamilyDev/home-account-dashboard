@@ -886,6 +886,40 @@
       }, 600);
     }
 
+    function processCloudPayload(payload, isInitialLoad) {
+      if (!payload) {
+        if (isInitialLoad) {
+          setCloudSyncStatus('Cloud Sync: ยังไม่มีข้อมูล', 'connecting');
+          saveToCloud();
+        }
+        return;
+      }
+
+      const remoteUpdatedAt = Number(payload.updatedAt) || 0;
+      if (payload.updatedBy === cloudClientId || remoteUpdatedAt <= lastCloudUpdatedAt) {
+        setCloudSyncStatus('Cloud Sync: ซิงก์แล้ว', 'online');
+        return;
+      }
+
+      isApplyingRemoteUpdate = true;
+      try {
+        lastCloudUpdatedAt = remoteUpdatedAt;
+        if (Array.isArray(payload.rows)) {
+          replaceData(payload.rows);
+          saveToStorage();
+        }
+        if (Array.isArray(payload.changeLog)) {
+          changeLog = payload.changeLog;
+          saveLogToStorage();
+        }
+        refreshTableAndCharts();
+        renderLog();
+      } finally {
+        isApplyingRemoteUpdate = false;
+      }
+      setCloudSyncStatus('Cloud Sync: อัปเดตจากอีกเครื่องแล้ว', 'online');
+    }
+
     async function initCloudSync() {
       if (!isFirebaseConfigValid(firebaseConfig)) {
         setCloudSyncStatus('Cloud Sync: ไม่มี config', 'offline');
@@ -909,45 +943,27 @@
       try {
         dbRef = firebase.database().ref(cloudSyncPath);
         setCloudSyncStatus('Cloud Sync: กำลังเชื่อมต่อ...', 'connecting');
+        const initialSnapshot = await Promise.race([
+          dbRef.once('value'),
+          new Promise((_, reject) => {
+            window.setTimeout(() => reject(new Error('cloud-sync-timeout')), 8000);
+          })
+        ]);
+        processCloudPayload(initialSnapshot.val(), true);
 
         dbRef.on('value', snapshot => {
-          const payload = snapshot.val();
-          if (!payload) {
-            setCloudSyncStatus('Cloud Sync: ยังไม่มีข้อมูล', 'connecting');
-            saveToCloud();
-            return;
-          }
-
-          const remoteUpdatedAt = Number(payload.updatedAt) || 0;
-          if (payload.updatedBy === cloudClientId || remoteUpdatedAt <= lastCloudUpdatedAt) {
-            setCloudSyncStatus('Cloud Sync: ซิงก์แล้ว', 'online');
-            return;
-          }
-
-          isApplyingRemoteUpdate = true;
-          try {
-            lastCloudUpdatedAt = remoteUpdatedAt;
-            if (Array.isArray(payload.rows)) {
-              replaceData(payload.rows);
-              saveToStorage();
-            }
-            if (Array.isArray(payload.changeLog)) {
-              changeLog = payload.changeLog;
-              saveLogToStorage();
-            }
-            refreshTableAndCharts();
-            renderLog();
-          } finally {
-            isApplyingRemoteUpdate = false;
-          }
-          setCloudSyncStatus('Cloud Sync: อัปเดตจากอีกเครื่องแล้ว', 'online');
+          processCloudPayload(snapshot.val(), false);
         }, error => {
           console.warn('การเชื่อมต่อ Cloud Sync ล้มเหลว', error);
           setCloudSyncStatus('Cloud Sync: เชื่อมต่อไม่ได้', 'offline');
         });
       } catch (error) {
         console.warn('เริ่มต้น Firebase ไม่สำเร็จ', error);
-        setCloudSyncStatus('Cloud Sync: เริ่มต้นไม่สำเร็จ', 'offline');
+        if (error && error.message === 'cloud-sync-timeout') {
+          setCloudSyncStatus('Cloud Sync: เชื่อมต่อช้าเกินไป', 'offline');
+        } else {
+          setCloudSyncStatus('Cloud Sync: เริ่มต้นไม่สำเร็จ', 'offline');
+        }
       }
     }
 
